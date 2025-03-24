@@ -15,16 +15,16 @@ const Dashboard = () => {
 
       <div className="features">
         <div className="feature-card">
-          <h3>✈️ Easy Booking</h3>
-          <p>Find and book flights with ease using our smart search.</p>
+          <h3 style={{color:"black"}}>✈️ Easy Booking</h3>
+          <p style={{color:"black"}}>Find and book flights with ease using our smart search.</p>
         </div>
         <div className="feature-card">
-          <h3>🏡 Best Destinations</h3>
-          <p>Discover top-rated travel destinations and hidden gems.</p>
+          <h3 style={{color:"black"}}>🏡 Best Destinations</h3>
+          <p style={{color:"black"}}>Discover top-rated travel destinations and hidden gems.</p>
         </div>
         <div className="feature-card">
-          <h3>🌟 Customer Reviews</h3>
-          <p>See what travelers have to say about their experiences.</p>
+          <h3 style={{color:"black"}}>🌟 Customer Reviews</h3>
+          <p style={{color:"black"}}>See what travelers have to say about their experiences.</p>
         </div>
       </div>
     </div>
