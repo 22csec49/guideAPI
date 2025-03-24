@@ -39,7 +39,7 @@ const Header = () => {
           </li>
         </ul>
       </nav>
-      <button className="login-btn">Sign In</button>
+      <button className="login-btn">Sign Up</button>
     </header>
   );
 };
