@@ -11,22 +11,73 @@ app.use(express.json());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const WEATHER_API_KEY = process.env.WEATHER_API_KEY;
+const NOMINATIM_API_URL = "https://nominatim.openstreetmap.org/search";
 
-// Function to correct Wikimedia Commons Image URLs
-const correctImageUrl = async (placeName) => {
+// Fetch coordinates for a given city
+const fetchCoordinates = async (city) => {
     try {
-        const searchResponse = await axios.get(
-            `https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&pithumbsize=600&titles=${encodeURIComponent(placeName)}`
+        const response = await axios.get(NOMINATIM_API_URL, {
+            params: { q: city, format: "json", limit: 1 },
+        });
+
+        if (response.data.length === 0) throw new Error("Location not found");
+
+        return {
+            lat: response.data[0].lat,
+            lon: response.data[0].lon,
+        };
+    } catch (error) {
+        console.error("Error fetching coordinates:", error.message);
+        return null;
+    }
+};
+
+// Fetch tourist places near the location
+const fetchTopTouristPlaces = async (lat, lon) => {
+    try {
+        const response = await axios.get(
+            `https://en.wikipedia.org/w/api.php?action=query&format=json&list=geosearch&gscoord=${lat}|${lon}&gsradius=10000&gslimit=5`
         );
 
-        const pages = searchResponse.data.query.pages;
-        const pageId = Object.keys(pages)[0]; // Get first result
-        const imageUrl = pages[pageId]?.thumbnail?.source;
-
-        return imageUrl || "";
+        return response.data.query.geosearch.map((place) => place.title);
     } catch (error) {
-        console.error("Error fetching Wikimedia image:", error.message);
-        return "";
+        console.error("Error fetching tourist places:", error.message);
+        return [];
+    }
+};
+
+// Fetch images for each place
+const fetchImageForPlace = async (place) => {
+    try {
+        const response = await axios.get(
+            `https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&format=json&pithumbsize=500&titles=${encodeURIComponent(place)}`
+        );
+
+        const pages = response.data.query.pages;
+        const page = Object.values(pages)[0];
+
+        return page.thumbnail ? page.thumbnail.source : null;
+    } catch (error) {
+        console.error(`Error fetching image for ${place}:`, error.message);
+        return null;
+    }
+};
+
+// Fetch weather details
+const fetchWeather = async (city) => {
+    try {
+        const response = await axios.get(
+            `https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${WEATHER_API_KEY}&units=metric`
+        );
+
+        return {
+            temp: response.data.main.temp,
+            description: response.data.weather[0].description,
+            humidity: response.data.main.humidity,
+        };
+    } catch (error) {
+        console.error("Error fetching weather:", error.message);
+        return null;
     }
 };
 
@@ -39,27 +90,42 @@ app.post("/api/travel-guide", async (req, res) => {
     }
 
     try {
-        // AI Prompt for Gemini API
+        // Get coordinates of the place
+        const coordinates = await fetchCoordinates(place);
+        if (!coordinates) {
+            return res.status(400).json({ error: "Invalid location" });
+        }
+
+        // Fetch tourist places near the coordinates
+        const topPlaces = await fetchTopTouristPlaces(coordinates.lat, coordinates.lon);
+        const placeData = await Promise.all(
+            topPlaces.map(async (name) => ({
+                name,
+                image: await fetchImageForPlace(name),
+            }))
+        );
+
+        // Generate hotel recommendations using Gemini AI
         const requestBody = {
             contents: [
                 {
                     parts: [
                         {
-                            text: `Suggest at least 6 hotels in ${place} for ${members} people within a budget of ₹${budget}.
-                            Each hotel should include:
-                            - Hotel name
+                            text: `Suggest 6 hotels in ${place} for ${members} people within ₹${budget}.
+                            Each hotel should have:
+                            - Name
                             - Location
-                            - Contact phone number
-                            - Pricing (with/without food)
+                            - Contact number
+                            - Pricing with/without food
                             - Food availability (true/false)
-
-                            Ensure the response is **pure JSON** with no extra text. Example:
+                            
+                            Respond in **pure JSON** like this:
                             {
                                 "hotels": [
                                     {
-                                        "name": "Hotel XYZ",
-                                        "location": "Place ABC",
-                                        "phone": "+91 6374733801",
+                                        "name": "Hotel ABC",
+                                        "location": "XYZ",
+                                        "phone": "+91 9876543210",
                                         "price": {
                                             "withFood": 5000,
                                             "withoutFood": 4000
@@ -74,7 +140,6 @@ app.post("/api/travel-guide", async (req, res) => {
             ]
         };
 
-        // Fetch hotel recommendations from Gemini AI
         const geminiResponse = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
             requestBody,
@@ -82,40 +147,28 @@ app.post("/api/travel-guide", async (req, res) => {
         );
 
         let generatedText = geminiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!generatedText) throw new Error("Empty response from AI");
+        if (!generatedText) throw new Error("Invalid AI response");
 
-        // Clean AI response (Remove unwanted JSON format issues)
         generatedText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
         const hotelsData = JSON.parse(generatedText);
 
-        if (!hotelsData.hotels || !Array.isArray(hotelsData.hotels) || hotelsData.hotels.length < 6) {
-            throw new Error("Less than 6 hotels returned");
+        if (!hotelsData.hotels || hotelsData.hotels.length < 6) {
+            throw new Error("Insufficient hotel data");
         }
 
-        // ✅ Dynamically Generate Correct Google Maps Links
+        // Append Google Maps links
         hotelsData.hotels = hotelsData.hotels.map((hotel) => ({
             ...hotel,
             mapLink: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(hotel.name + " " + hotel.location)}`,
         }));
 
-        // Get Wikimedia image URL dynamically
-        const imageUrl = await correctImageUrl(place);
-
         // Fetch weather details
-        const weatherResponse = await axios.get(
-            `https://api.openweathermap.org/data/2.5/weather?q=${place}&appid=${WEATHER_API_KEY}&units=metric`
-        );
-
-        const weather = {
-            temp: weatherResponse.data.main.temp,
-            description: weatherResponse.data.weather[0].description,
-            humidity: weatherResponse.data.main.humidity,
-        };
+        const weather = await fetchWeather(place);
 
         res.json({
             hotels: hotelsData.hotels,
             weather,
-            imageUrl
+            topTouristPlaces: placeData.filter((p) => p.image),
         });
     } catch (error) {
         console.error("Error:", error.message);
